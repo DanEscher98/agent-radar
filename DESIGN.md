@@ -315,11 +315,17 @@ effort against issue #627).**
   overlap what moved on the base branch since the fork point) and fails
   silently on any git error, since it's a bonus signal, not something to crash
   `triage` over.
-- A unit test suite (`vitest`, 26 tests across 10 files) covers every pure
+- A unit test suite (`vitest`, 29 tests across 11 files) covers every pure
   detector directly and the API-calling ones against a fake `GhContext` — no
   live GitHub calls in CI, per the original plan.
 - `README.md`'s "Wire it in" section carries the actual `CLAUDE.md` snippet
   and `SessionStart` hook JSON, not just a description of the idea.
+- `agent-radar install-skill` actually installs `SKILL.md` into
+  `<cwd>/.claude/skills/agent-radar/`, resolved relative to the installed
+  package's own layout (works the same globally, locally, or via `npx`), not
+  relative to anything about whichever project happens to run it — this is
+  what the skill file was missing before: a real install path into an
+  arbitrary project, instead of sitting inert in the npm tarball.
 
 **M2 — Board-Desync Detector — done.** Didn't actually need a scope change:
 the account used to test against PAMS (`danieldominguez-pathos`) already had

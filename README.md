@@ -40,7 +40,20 @@ Once published, this collapses to `npx agent-radar triage` / `npm i -g agent-rad
 ## Wire it in
 
 The tool existing isn't what makes it "called unprompted" — a standing
-instruction to call it is. Pick one or both:
+instruction to call it is. Run this once per project (any project — it's not
+tied to the one this was built/tested against):
+
+```sh
+agent-radar install-skill
+```
+
+This copies the packaged `SKILL.md` into `<project>/.claude/skills/agent-radar/`,
+the directory Claude Code (and compatible agents) read skills from, so the
+tool is discoverable there even without the lines below. It's idempotent —
+re-running it just overwrites with the current version.
+
+Then pick one or both of these, for a standing instruction, not just
+discoverability:
 
 **A `CLAUDE.md` line** (or equivalent for another agent), in the project being
 worked on:
