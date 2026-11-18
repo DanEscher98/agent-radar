@@ -24,6 +24,10 @@ and what's actually asking for my attention."
   conflicting file, so the agent can act instead of reporting back for more detail.
 - Catch drift: what changed upstream since *this session* started working, not just
   "is there a conflict right now."
+- Catch metadata drift too: cases where the actual state (patch pushed, PR merged)
+  has moved on but the tracking surface around it (review thread, issue, project
+  board) hasn't caught up — that gap is exactly what reads as "stale" to a reviewer
+  even when the real work is done.
 
 ## Non-goals
 
@@ -54,6 +58,33 @@ and what's actually asking for my attention."
    started" — the actual "agent generates code while teammates update" failure mode
    from the brief.
 
+### Metadata drift (the patch moved, the paper trail didn't)
+
+These are a different shape of problem from 1–5: the real state is already correct,
+but something that's supposed to track it wasn't updated, so it *reads* as stale
+to a reviewer even though it isn't.
+
+6. **Addressed-but-unresolved threads** — a review thread whose comment points at a
+   file/line, where a later commit on the PR touched that same file after the
+   comment was posted. Can't prove the fix is correct, but it's a strong "likely
+   addressed, go confirm and resolve the thread" signal versus a thread sitting on a
+   file nothing has touched since (genuinely still unresolved). Needs the comment's
+   `originalLine`/`diffHunk` plus the PR's commit list with per-commit changed files
+   (both in GraphQL `PullRequest.reviewThreads` / `PullRequest.commits`) — no extra
+   scope beyond what signal 2 already needs.
+7. **Merged PR, issue still open** — cross-check each merged PR's
+   `closingIssuesReferences` (GraphQL) against the linked issue's current `state`.
+   Catches the common misses: the PR used "related to #N" instead of a closing
+   keyword, it merged into a non-default branch so GitHub's auto-close never fired,
+   or it referenced an issue in a different repo (cross-repo refs don't auto-close
+   at all).
+8. **Project-board status stale** — an issue/PR's GitHub Projects v2 item field
+   (e.g. a "Status" single-select) still reads "In Progress"/"In Review" after the
+   underlying issue/PR is actually closed or merged. Needs `ProjectV2Item` field
+   values via GraphQL, which needs the `project` (or `read:project`) OAuth scope —
+   call out as a setup check (`gh auth status` scope list), since a token minted
+   without it will otherwise just see an empty project list and look broken.
+
 ## Output contract
 
 One JSON digest per call, ranked most-urgent first:
@@ -68,7 +99,12 @@ One JSON digest per call, ranked most-urgent first:
       "comments": [{ "author": "...", "path": "...", "line": 12, "body": "..." }] },
     { "kind": "stale_pr", "pr": 39, "severity": "medium", "idleDays": 4 },
     { "kind": "unaddressed_issue", "issue": 12, "severity": "low" },
-    { "kind": "drift", "severity": "medium", "detail": "base moved 3 commits since session start" }
+    { "kind": "drift", "severity": "medium", "detail": "base moved 3 commits since session start" },
+    { "kind": "stale_thread", "pr": 41, "severity": "medium",
+      "detail": "comment on src/foo.ts:12 predates commit abc1234 touching that file — confirm and resolve" },
+    { "kind": "merged_pr_issue_open", "pr": 37, "issue": 30, "severity": "medium" },
+    { "kind": "board_status_stale", "issue": 30, "severity": "low",
+      "detail": "board says In Progress, issue has been closed since 2026-11-10" }
   ]
 }
 ```
@@ -82,15 +118,23 @@ that isn't needed to decide or act goes in.
 - `src/core/` — a plain TS library: `getSnapshot(owner, repo)`,
   `getUnresolvedComments(owner, repo, pr)`, using `@octokit/rest` authed via
   `gh auth token` (shell out once at startup, no separate credential flow).
+- Signals 6 and 7 (addressed-but-unresolved threads, merged-PR-issue-still-open) ride
+  along in M1 — same GraphQL calls signal 2 already needs (thread/commit data,
+  `closingIssuesReferences`), no new scope, no new infra.
 - `bin/agent-radar` CLI — `agent-radar snapshot --repo owner/name [--json]`.
 - A Claude Code skill (`SKILL.md` + thin wrapper script) in this repo, installable
   into any project, that calls the CLI and hands the digest back to the agent — gets
   this working inside a real session without waiting for M2's MCP plumbing.
 
-**M2 — drift tracking**
+**M2 — drift tracking + project board**
 - `.agent-radar/state.json` (repo-local, gitignored) holding the session-start
   marker per branch. `agent-radar session start` / implicit on first snapshot call.
 - Drift signal added to the digest (see above).
+- Signal 8 (project-board status) added here, not M1: it's a genuinely separate
+  GraphQL shape (`ProjectV2Item` field values, org- or repo-scoped project lookup)
+  and needs a scope (`read:project`) the current `DanEscher98` token doesn't have
+  yet (`gh auth refresh -s read:project` before this lands) — bundling it with M1
+  would block M1 on a scope change for an unrelated signal.
 
 **M3 — MCP server**
 - `agent-radar mcp` wraps the same `src/core/` library as MCP tools
@@ -114,7 +158,9 @@ that isn't needed to decide or act goes in.
 
 ## Order of work
 
-1. M1 core + CLI + skill — the whole point, ship this first.
-2. M2 drift tracking — the "teammates moved the ground" failure mode specifically.
+1. M1 core + CLI + skill (incl. addressed-but-unresolved threads, merged-PR-issue-open)
+   — the whole point, ship this first.
+2. M2 drift tracking + project-board staleness — "teammates moved the ground" and
+   "the board doesn't know it's done" are the same category, just different sources.
 3. M3 MCP server — removes the "install a skill per project" friction.
 4. M4 Slack digest — only if the supervisor-facing angle still matters once M1–M3 land.
