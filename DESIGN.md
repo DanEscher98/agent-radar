@@ -2,18 +2,30 @@
 
 ## Problem
 
-Coding agents (this one included) lose track of repo state mid-session: they keep
-generating code/PRs while a base branch moves, review comments pile up unaddressed,
-and merge conflicts appear that nobody notices until someone else points it out. The
-human-visible symptom is a supervisor complaining about stale PRs and unanswered
-review comments. The agent-visible symptom is the same user having to re-prompt
-"check the status of X" over and over, because the agent has no way to pull that
-context on its own.
+The deepest version of this problem isn't "stale PRs/comments exist" — it's that an
+agent working a session has no cheap way to re-ground itself in what's actually true
+about the project right now, so it drifts: it keeps generating patches on a mental
+model of the repo that's increasingly out of date, it answers "what are we doing"
+mid-session from its own accumulated (and fallible) context instead of from the
+repo's real state, and — the sharpest symptom — it has been observed patching the
+*same issue* from several different angles across a session because it never built
+a broad picture first, just reacted file-by-file. Each of those re-patches is itself
+an ad hoc round of `gh` calls, which bloats the very context window the agent is
+trying to reason inside — a self-reinforcing version of the problem.
 
-`gh-dash` already solves the *human* version of this (a TUI you glance at). This tool
-is the *agent* version: something a coding agent calls itself, unprompted, to get a
-cheap, structured, token-efficient answer to "what's the state of the world right now,
-and what's actually asking for my attention."
+The stale-PR/unanswered-comment symptom (what originally prompted this tool, and
+what a supervisor actually complains about) is a special case of the same root
+cause: the agent's picture of "what's done" lagged the repo's real state. Fixing
+*that* picture — one cheap, aggregated call instead of many piecemeal ones — fixes
+both: the agent drifts less and hallucinates less about project state, and the
+triage symptoms (stale threads, open issues on merged work) come along for free as
+specific signals inside the same aggregated picture.
+
+`gh-dash` already solves the *human* version of this (a TUI you glance at). This
+tool is the *agent* version: something a coding agent calls itself, unprompted, to
+re-ground in "what's actually true right now, in order, and what's asking for
+attention" — in one cheap call instead of the many ad hoc ones that would otherwise
+pile up in its own history.
 
 ## Goals
 
@@ -38,6 +50,20 @@ and what's actually asking for my attention."
   moved on but the tracking surface around it (review thread, issue, project board)
   hasn't caught up — that gap is exactly what reads as "stale" even when the real
   work is done.
+- Every event and item carries a real timestamp (ISO 8601, not just "4 days ago")
+  — an agent re-grounding itself needs an actual timeline it can reason about
+  ("the comment predates the fix," "three commits landed on main in the last hour"),
+  not just current state with no sense of order or pace.
+- Minimize total round-trips across a session, not just per call: one aggregated
+  call should replace the several ad hoc `gh pr view` / `gh api graphql` calls an
+  agent would otherwise make while reorienting, which is what actually keeps the
+  conversation history lean. A call that's individually cheap but still invites five
+  more follow-up calls hasn't solved this.
+- Support orientation *before* acting, not just triage after something's already
+  wrong: a cheap check for "has this issue/these files already been touched
+  recently, by me or someone else" is what would have caught the same-issue,
+  different-angle re-patching this was built to stop — see signal 0 and the
+  `pulse`/`snapshot` split below.
 
 ## Non-goals
 
@@ -47,8 +73,37 @@ and what's actually asking for my attention."
 - No new auth setup — reuses `gh auth token` from the environment's existing `gh` CLI
   login. No PAT to mint or rotate.
 
+## Two modes: `pulse` vs `snapshot`
+
+Different moments in a session want different weight of call, which is why this
+isn't one command:
+
+- **`agent-radar pulse [--issue N] [--files a,b,c]`** — cheap, meant to be called
+  often, mid-session. Answers "what are we actually doing, and has this already
+  been touched" without the cost of the full triage sweep: just signal 0 (recent
+  timeline) and signal 9 (duplicate-effort check), scoped tightly to the issue/files
+  given. This is the direct antidote to re-patching the same issue from a new angle
+  without having checked what's already in flight on it.
+- **`agent-radar snapshot`** — the fuller digest (signals 1–8): PR/review/issue
+  triage plus metadata drift. Called at the start and end of working a PR/issue, not
+  continuously — this is the one that answers the original "stale PRs and comments"
+  ask.
+
+Both share `src/core/`; `pulse` is not a smaller rewrite of `snapshot`, it's a
+narrower query over the same data sources.
+
 ## Signals (the actual pain points, turned into data)
 
+Every signal below returns a real timestamp (`at`, ISO 8601) per event/item, not
+just a precomputed "idleDays" — the relative figures in the examples are *derived
+from* that timestamp for convenience, not a replacement for it.
+
+0. **Recent activity timeline** (`pulse`'s primary signal) — the last N (default
+   ~20) events on the default branch and on anything touching the files or issue
+   number given: commits (author, message, files, timestamp), PR opens/merges/
+   closes, issue comments — in chronological order. This is "broad vision first":
+   called before starting work on an issue, it answers "what's actually happened
+   here lately" instead of the agent inferring pace/state from its own stale memory.
 1. **Open PRs you own** (repo = the one at `pwd` unless `--repo` overrides it, items
    = yours by default, see Goals) — mergeable state (`MERGEABLE` / `CONFLICTING` /
    `UNKNOWN`), review decision (`APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`),
@@ -101,30 +156,68 @@ to a reviewer even though it isn't.
    call out as a setup check (`gh auth status` scope list), since a token minted
    without it will otherwise just see an empty project list and look broken.
 
+### Duplicate effort (`pulse`'s other signal)
+
+9. **Already touched** — given an issue number and/or a set of files about to be
+   edited, list any commit (on any branch) or PR (open, merged, or closed without
+   merging) from the last N days whose message references that issue number, or
+   whose diff overlaps those files — each with its timestamp and author. The direct
+   fix for "patched the same issue from three different angles": this makes "has
+   someone (including an earlier part of this same session) already tried this"
+   a one-call check instead of something only caught by chance or by the user
+   noticing. A closed-without-merging PR against the same issue is itself a signal
+   worth surfacing — it often means an approach was already tried and abandoned.
+
 ## Output contract
 
-One JSON digest per call, ranked most-urgent first:
+`pulse` — scoped, chronological, meant to be read in full every time:
+
+```jsonc
+{
+  "repo": "DanEscher98/agent-radar",
+  "generatedAt": "2026-11-18T22:00:00Z",
+  "scope": { "issue": 30, "files": ["src/foo.ts"] },
+  "timeline": [
+    { "at": "2026-11-16T14:02:00Z", "kind": "commit", "sha": "abc1234",
+      "author": "...", "message": "fix: ...", "files": ["src/foo.ts"] },
+    { "at": "2026-11-17T09:40:00Z", "kind": "pr_closed_unmerged", "pr": 36,
+      "title": "attempt: ...", "author": "..." },
+    { "at": "2026-11-18T08:15:00Z", "kind": "pr_opened", "pr": 41, "author": "..." }
+  ],
+  "duplicates": [
+    { "at": "2026-11-17T09:40:00Z", "kind": "already_touched", "pr": 36,
+      "severity": "high", "detail": "closed without merging, same file, 1 day ago",
+      "action": "read PR #36 before starting a new approach — it may already show what didn't work" }
+  ]
+}
+```
+
+`snapshot` — one JSON digest per call, ranked most-urgent first, every item dated:
 
 ```jsonc
 {
   "repo": "DanEscher98/agent-radar",
   "generatedAt": "2026-11-18T22:00:00Z",
   "items": [
-    { "kind": "conflict", "pr": 42, "severity": "high", "detail": "...",
-      "action": "rebase onto main, resolve src/x.ts" },
+    { "kind": "conflict", "pr": 42, "severity": "high", "at": "2026-11-18T20:10:00Z",
+      "detail": "...", "action": "rebase onto main, resolve src/x.ts" },
     { "kind": "changes_requested", "pr": 41, "severity": "high",
-      "comments": [{ "author": "...", "path": "...", "line": 12, "body": "..." }],
+      "comments": [{ "author": "...", "path": "...", "line": 12, "body": "...",
+        "at": "2026-11-17T16:30:00Z" }],
       "action": "address the comment on src/foo.ts:12, then reply" },
-    { "kind": "stale_pr", "pr": 39, "severity": "medium", "idleDays": 4,
+    { "kind": "stale_pr", "pr": 39, "severity": "medium",
+      "at": "2026-11-14T11:00:00Z", "idleDays": 4,
       "action": "ping for review or close if abandoned" },
     { "kind": "unaddressed_issue", "issue": 12, "severity": "low",
-      "action": "triage or close" },
+      "at": "2026-11-10T09:00:00Z", "action": "triage or close" },
     { "kind": "stale_thread", "pr": 41, "severity": "medium",
-      "detail": "comment on src/foo.ts:12 predates commit abc1234 touching that file",
+      "at": "2026-11-15T13:00:00Z",
+      "detail": "comment on src/foo.ts:12 predates commit abc1234 (2026-11-16T14:02:00Z) touching that file",
       "action": "confirm the fix landed, then resolve the thread" },
     { "kind": "merged_pr_issue_open", "pr": 37, "issue": 30, "severity": "medium",
-      "action": "close issue #30, it's done" },
+      "at": "2026-11-16T18:00:00Z", "action": "close issue #30, it's done" },
     { "kind": "board_status_stale", "issue": 30, "severity": "low",
+      "at": "2026-11-10T09:00:00Z",
       "detail": "board says In Progress, issue has been closed since 2026-11-10",
       "action": "move the board card to Done" }
   ]
@@ -132,27 +225,33 @@ One JSON digest per call, ranked most-urgent first:
 ```
 
 Terse by design — this is read by an LLM's context window, not rendered. Every item
-carries an `action`, not just state: translating "here's what's wrong" into "here's
-what to do about it" is work an agent would otherwise redo on every single call, so
-it belongs in the tool, not left to the caller. No field that isn't needed to decide
-or act goes in. `kind: "drift"` (signal 5) is omitted here — see its demoted status
-above; it's documented but not part of the v1 contract.
+carries `at` and an `action`: the timestamp gives the agent a real timeline instead
+of a bag of unordered facts, and the action removes a translation step it would
+otherwise redo on every call. No field that isn't needed to decide, act, or place
+something in time goes in. `kind: "drift"` (signal 5) is omitted here — see its
+demoted status above; it's documented but not part of the v1 contract.
 
 ## Architecture (phased)
 
 **M1 — core + CLI + skill + invocation wiring** (ship first, usable immediately;
 this is the phase that determines whether the tool gets used at all)
-- `src/core/` — a plain TS library: `getSnapshot(cwd?)`, resolving repo + "mine"
-  scope from the current directory's git remote and the authed `gh` user, plus
-  `getUnresolvedComments(owner, repo, pr)` — all via `@octokit/rest`/GraphQL authed
-  through `gh auth token` (shell out once at startup, no separate credential flow).
+- `src/core/` — a plain TS library: `getSnapshot(cwd?)` and `getPulse(cwd?, {issue?,
+  files?})`, resolving repo + "mine" scope from the current directory's git remote
+  and the authed `gh` user, plus `getUnresolvedComments(owner, repo, pr)` — all via
+  `@octokit/rest`/GraphQL authed through `gh auth token` (shell out once at startup,
+  no separate credential flow).
+- Signals 0 and 9 (timeline, duplicate-effort) ship in M1, not later — they're the
+  direct fix for the same-issue-different-angles failure mode, which is the
+  sharpest problem this tool exists to solve, not a nice-to-have alongside triage.
 - Signals 1–4, 6, 7 (everything except the project board and the demoted drift
-  signal) ship here. 6 and 7 ride along for free — same GraphQL calls signal 2
+  signal) ship here too. 6 and 7 ride along for free — same GraphQL calls signal 2
   already needs (thread/commit data, `closingIssuesReferences`), no new scope.
-- Every item carries its `action` field (see Output contract) — this is the part
-  that makes the digest worth reading instead of re-deriving by hand each time.
-- `bin/agent-radar` CLI — `agent-radar snapshot [--repo owner/name] [--json]`,
-  `--repo` optional, defaulting to `pwd`'s remote.
+- Every event/item carries `at` and (where applicable) `action` (see Output
+  contract) — these are what make the output worth reading instead of re-deriving
+  by hand each time.
+- `bin/agent-radar` CLI — `agent-radar snapshot [--repo owner/name] [--json]` and
+  `agent-radar pulse [--issue N] [--files a,b,c]`, `--repo` optional everywhere,
+  defaulting to `pwd`'s remote.
 - A Claude Code skill (`SKILL.md` + thin wrapper script), installable into any
   project, that calls the CLI.
 - **The actual deliverable of M1 isn't the skill existing, it's a standing
