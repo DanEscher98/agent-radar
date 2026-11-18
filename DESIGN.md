@@ -31,9 +31,9 @@ pile up in its own history.
 
 - Callable by an agent without the user asking first. What makes this true is a
   standing instruction to call it (a `CLAUDE.md` line or a `SessionStart`/`Stop`
-  hook), not which protocol it's called through — a `Bash: agent-radar snapshot`
+  hook), not which protocol it's called through — a `Bash: agent-radar triage`
   is exactly as "callable unprompted" as an MCP tool would be. Ship the invocation
-  wiring as part of M1, don't treat it as something MCP (M3) unlocks.
+  wiring as part of M1, don't treat it as something MCP (M4) unlocks.
 - Defaults to the repo at `pwd` — same convention `git`/`gh` already use (walk up to
   the nearest `.git`, read its remote). No `--repo owner/name` for the common case
   of "the repo I'm sitting in right now"; that flag exists only to look at something
@@ -62,129 +62,154 @@ pile up in its own history.
 - Support orientation *before* acting, not just triage after something's already
   wrong: a cheap check for "has this issue/these files already been touched
   recently, by me or someone else" is what would have caught the same-issue,
-  different-angle re-patching this was built to stop — see signal 0 and the
-  `pulse`/`snapshot` split below.
+  different-angle re-patching this was built to stop — see the Orientation Sweep
+  and Duplicate-Effort Detector below.
+- Name every tool/detector for what it's *for*, not what data it happens to return
+  — "Duplicate-Effort Detector," not "already-touched list." A plain name invites
+  treating the output as raw data to re-interpret; an intent name is itself a
+  reminder of why the call was worth making.
 
 ## Non-goals
 
 - No human-facing dashboard/TUI — that's `gh-dash`'s job, already covered.
-- No alerting/notification service in v1 (Slack digest is a stretch goal, see M4).
+- No alerting/notification service in v1 (Slack digest is a stretch goal, see M5).
 - GitHub only. No GitLab/Bitbucket abstraction until there's a second real user of it.
 - No new auth setup — reuses `gh auth token` from the environment's existing `gh` CLI
   login. No PAT to mint or rotate.
 
-## Two modes: `pulse` vs `snapshot`
+## Two tools: `orient` vs `triage`
 
 Different moments in a session want different weight of call, which is why this
 isn't one command:
 
-- **`agent-radar pulse [--issue N] [--files a,b,c]`** — cheap, meant to be called
-  often, mid-session. Answers "what are we actually doing, and has this already
-  been touched" without the cost of the full triage sweep: just signal 0 (recent
-  timeline) and signal 9 (duplicate-effort check), scoped tightly to the issue/files
-  given. This is the direct antidote to re-patching the same issue from a new angle
+- **`agent-radar orient [--issue N] [--files a,b,c]`** — cheap, meant to be called
+  often, mid-session. Runs the **Orientation Sweep** and the **Duplicate-Effort
+  Detector**, scoped tightly to the issue/files given. Answers "what are we
+  actually doing, and has this already been touched" without the cost of the full
+  triage sweep — the direct antidote to re-patching the same issue from a new angle
   without having checked what's already in flight on it.
-- **`agent-radar snapshot`** — the fuller digest (signals 1–8): PR/review/issue
-  triage plus metadata drift. Called at the start and end of working a PR/issue, not
-  continuously — this is the one that answers the original "stale PRs and comments"
-  ask.
+- **`agent-radar triage`** — the fuller digest: **PR Health Check**,
+  **Unresolved-Feedback Extractor**, **Stale-Issue Detector**, **Conflict
+  Detector**, and the metadata-drift detectors (**Already-Addressed Detector**,
+  **Orphaned-Issue Detector**, **Board-Desync Detector**). Called at the start and
+  end of working a PR/issue, not continuously — this is the one that answers the
+  original "stale PRs and comments" ask.
 
-Both share `src/core/`; `pulse` is not a smaller rewrite of `snapshot`, it's a
-narrower query over the same data sources.
+Both share `src/core/`; `orient` is not a smaller rewrite of `triage`, it's a
+narrower query over the same data sources, run by a different detector set.
 
-## Signals (the actual pain points, turned into data)
+## Detectors (the actual pain points, turned into data)
 
-Every signal below returns a real timestamp (`at`, ISO 8601) per event/item, not
+Every detector below returns a real timestamp (`at`, ISO 8601) per event/item, not
 just a precomputed "idleDays" — the relative figures in the examples are *derived
 from* that timestamp for convenience, not a replacement for it.
 
-0. **Recent activity timeline** (`pulse`'s primary signal) — the last N (default
-   ~20) events on the default branch and on anything touching the files or issue
-   number given: commits (author, message, files, timestamp), PR opens/merges/
-   closes, issue comments — in chronological order. This is "broad vision first":
-   called before starting work on an issue, it answers "what's actually happened
-   here lately" instead of the agent inferring pace/state from its own stale memory.
-1. **Open PRs you own** (repo = the one at `pwd` unless `--repo` overrides it, items
-   = yours by default, see Goals) — mergeable state (`MERGEABLE` / `CONFLICTING` /
-   `UNKNOWN`), review decision (`APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`),
-   CI checks rollup, commits-behind-base, days since last activity (commit, comment,
-   or review).
-2. **Unresolved review threads** — not just "N comments requested changes": the actual
-   thread body, author, file + line, `isResolved`/`isOutdated` filtered to the ones
-   still live. This is the single highest-value signal — it's what a supervisor means
-   by "stale comments," and what the agent needs verbatim to go fix it.
-3. **Unaddressed issues** — open, assigned to you (or unassigned with a `needs-triage`
-   label), no comment/label change since opened past a configurable threshold.
-4. **Merge conflicts** — `mergeable=CONFLICTING` on your open PRs, plus a *predictive*
-   version: diff the base branch's commits since the PR's branch point against the
-   files the agent's current working tree has touched, so a conflict is flagged
-   before GitHub's own mergeable check catches up.
-5. **Session drift** (demoted — see below) — a lightweight "session start" marker
-   (branch + base SHA + timestamp, written on first call per branch) so a later call
-   in the same session can answer "what landed on the base branch since I started."
-   On reflection this mostly duplicates `git fetch && git log origin/main..HEAD`,
-   which an agent already runs before merging as a matter of course — the marker
-   buys a saved round trip, not new information. Kept as a later, optional signal
-   rather than cut outright, since a cheap "has upstream moved" ping is still nicer
-   than remembering to run the git commands, but it doesn't justify M2 priority the
-   way the metadata-drift signals below do.
+### Orientation Sweep (`orient`'s primary detector)
 
-### Metadata drift (the patch moved, the paper trail didn't)
+The last N (default ~20) events on the default branch and on anything touching the
+files or issue number given: commits (author, message, files, timestamp), PR opens/
+merges/closes, issue comments — in chronological order. This is "broad vision
+first": called before starting work on an issue, it answers "what's actually
+happened here lately" instead of the agent inferring pace/state from its own stale
+memory.
 
-These are a different shape of problem from 1–5: the real state is already correct,
-but something that's supposed to track it wasn't updated, so it *reads* as stale
-to a reviewer even though it isn't.
+### PR Health Check
 
-6. **Addressed-but-unresolved threads** — a review thread whose comment points at a
-   file/line, where a later commit on the PR touched that same file after the
-   comment was posted. Can't prove the fix is correct, but it's a strong "likely
-   addressed, go confirm and resolve the thread" signal versus a thread sitting on a
-   file nothing has touched since (genuinely still unresolved). Needs the comment's
-   `originalLine`/`diffHunk` plus the PR's commit list with per-commit changed files
-   (both in GraphQL `PullRequest.reviewThreads` / `PullRequest.commits`) — no extra
-   scope beyond what signal 2 already needs.
-7. **Merged PR, issue still open** — cross-check each merged PR's
-   `closingIssuesReferences` (GraphQL) against the linked issue's current `state`.
-   Catches the common misses: the PR used "related to #N" instead of a closing
-   keyword, it merged into a non-default branch so GitHub's auto-close never fired,
-   or it referenced an issue in a different repo (cross-repo refs don't auto-close
-   at all).
-8. **Project-board status stale** — an issue/PR's GitHub Projects v2 item field
-   (e.g. a "Status" single-select) still reads "In Progress"/"In Review" after the
-   underlying issue/PR is actually closed or merged. Needs `ProjectV2Item` field
-   values via GraphQL, which needs the `project` (or `read:project`) OAuth scope —
-   call out as a setup check (`gh auth status` scope list), since a token minted
-   without it will otherwise just see an empty project list and look broken.
+Open PRs you own (repo = the one at `pwd` unless `--repo` overrides it, items =
+yours by default, see Goals) — mergeable state (`MERGEABLE` / `CONFLICTING` /
+`UNKNOWN`), review decision (`APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`),
+CI checks rollup, commits-behind-base, days since last activity (commit, comment,
+or review).
 
-### Duplicate effort (`pulse`'s other signal)
+### Unresolved-Feedback Extractor
 
-9. **Already touched** — given an issue number and/or a set of files about to be
-   edited, list any commit (on any branch) or PR (open, merged, or closed without
-   merging) from the last N days whose message references that issue number, or
-   whose diff overlaps those files — each with its timestamp and author. The direct
-   fix for "patched the same issue from three different angles": this makes "has
-   someone (including an earlier part of this same session) already tried this"
-   a one-call check instead of something only caught by chance or by the user
-   noticing. A closed-without-merging PR against the same issue is itself a signal
-   worth surfacing — it often means an approach was already tried and abandoned.
+Not just "N comments requested changes": the actual thread body, author, file +
+line, `isResolved`/`isOutdated` filtered to the ones still live. This is the single
+highest-value detector — it's what a supervisor means by "stale comments," and
+what the agent needs verbatim to go fix it.
+
+### Stale-Issue Detector
+
+Open issues, assigned to you (or unassigned with a `needs-triage` label), no
+comment/label change since opened past a configurable threshold.
+
+### Conflict Detector
+
+`mergeable=CONFLICTING` on your open PRs, plus a *predictive* version: diff the
+base branch's commits since the PR's branch point against the files the agent's
+current working tree has touched, so a conflict is flagged before GitHub's own
+mergeable check catches up.
+
+### Upstream-Drift Detector (demoted — see M3)
+
+A lightweight "session start" marker (branch + base SHA + timestamp, written on
+first call per branch) so a later call in the same session can answer "what landed
+on the base branch since I started." On reflection this mostly duplicates
+`git fetch && git log origin/main..HEAD`, which an agent already runs before
+merging as a matter of course — the marker buys a saved round trip, not new
+information. Kept as a later, optional detector rather than cut outright, since a
+cheap "has upstream moved" ping is still nicer than remembering to run the git
+commands, but it doesn't justify M2 priority the way the metadata-drift detectors
+below do.
+
+### Metadata-drift detectors (the patch moved, the paper trail didn't)
+
+A different shape of problem from the detectors above: the real state is already
+correct, but something that's supposed to track it wasn't updated, so it *reads*
+as stale to a reviewer even though it isn't.
+
+**Already-Addressed Detector** — a review thread whose comment points at a
+file/line, where a later commit on the PR touched that same file after the comment
+was posted. Can't prove the fix is correct, but it's a strong "likely addressed, go
+confirm and resolve the thread" signal versus a thread sitting on a file nothing
+has touched since (genuinely still unresolved). Needs the comment's
+`originalLine`/`diffHunk` plus the PR's commit list with per-commit changed files
+(both in GraphQL `PullRequest.reviewThreads` / `PullRequest.commits`) — no extra
+scope beyond the Unresolved-Feedback Extractor already needs.
+
+**Orphaned-Issue Detector** — cross-check each merged PR's
+`closingIssuesReferences` (GraphQL) against the linked issue's current `state`.
+Catches the common misses: the PR used "related to #N" instead of a closing
+keyword, it merged into a non-default branch so GitHub's auto-close never fired, or
+it referenced an issue in a different repo (cross-repo refs don't auto-close at
+all).
+
+**Board-Desync Detector** — an issue/PR's GitHub Projects v2 item field (e.g. a
+"Status" single-select) still reads "In Progress"/"In Review" after the underlying
+issue/PR is actually closed or merged. Needs `ProjectV2Item` field values via
+GraphQL, which needs the `project` (or `read:project`) OAuth scope — call out as a
+setup check (`gh auth status` scope list), since a token minted without it will
+otherwise just see an empty project list and look broken.
+
+### Duplicate-Effort Detector (`orient`'s other detector)
+
+Given an issue number and/or a set of files about to be edited, list any commit (on
+any branch) or PR (open, merged, or closed without merging) from the last N days
+whose message references that issue number, or whose diff overlaps those files —
+each with its timestamp and author. The direct fix for "patched the same issue from
+three different angles": this makes "has someone (including an earlier part of this
+same session) already tried this" a one-call check instead of something only caught
+by chance or by the user noticing. A closed-without-merging PR against the same
+issue is itself a signal worth surfacing — it often means an approach was already
+tried and abandoned.
 
 ## Output contract
 
-`pulse` — scoped, chronological, meant to be read in full every time:
+`orient` — scoped, chronological, meant to be read in full every time:
 
 ```jsonc
 {
   "repo": "DanEscher98/agent-radar",
   "generatedAt": "2026-11-18T22:00:00Z",
   "scope": { "issue": 30, "files": ["src/foo.ts"] },
-  "timeline": [
+  "orientationSweep": [
     { "at": "2026-11-16T14:02:00Z", "kind": "commit", "sha": "abc1234",
       "author": "...", "message": "fix: ...", "files": ["src/foo.ts"] },
     { "at": "2026-11-17T09:40:00Z", "kind": "pr_closed_unmerged", "pr": 36,
       "title": "attempt: ...", "author": "..." },
     { "at": "2026-11-18T08:15:00Z", "kind": "pr_opened", "pr": 41, "author": "..." }
   ],
-  "duplicates": [
+  "duplicateEffort": [
     { "at": "2026-11-17T09:40:00Z", "kind": "already_touched", "pr": 36,
       "severity": "high", "detail": "closed without merging, same file, 1 day ago",
       "action": "read PR #36 before starting a new approach — it may already show what didn't work" }
@@ -192,32 +217,35 @@ to a reviewer even though it isn't.
 }
 ```
 
-`snapshot` — one JSON digest per call, ranked most-urgent first, every item dated:
+`triage` — one JSON digest per call, ranked most-urgent first, every item dated:
 
 ```jsonc
 {
   "repo": "DanEscher98/agent-radar",
   "generatedAt": "2026-11-18T22:00:00Z",
   "items": [
-    { "kind": "conflict", "pr": 42, "severity": "high", "at": "2026-11-18T20:10:00Z",
-      "detail": "...", "action": "rebase onto main, resolve src/x.ts" },
-    { "kind": "changes_requested", "pr": 41, "severity": "high",
+    { "kind": "conflict", "detector": "Conflict Detector", "pr": 42,
+      "severity": "high", "at": "2026-11-18T20:10:00Z", "detail": "...",
+      "action": "rebase onto main, resolve src/x.ts" },
+    { "kind": "changes_requested", "detector": "Unresolved-Feedback Extractor",
+      "pr": 41, "severity": "high",
       "comments": [{ "author": "...", "path": "...", "line": 12, "body": "...",
         "at": "2026-11-17T16:30:00Z" }],
       "action": "address the comment on src/foo.ts:12, then reply" },
-    { "kind": "stale_pr", "pr": 39, "severity": "medium",
-      "at": "2026-11-14T11:00:00Z", "idleDays": 4,
+    { "kind": "stale_pr", "detector": "PR Health Check", "pr": 39,
+      "severity": "medium", "at": "2026-11-14T11:00:00Z", "idleDays": 4,
       "action": "ping for review or close if abandoned" },
-    { "kind": "unaddressed_issue", "issue": 12, "severity": "low",
-      "at": "2026-11-10T09:00:00Z", "action": "triage or close" },
-    { "kind": "stale_thread", "pr": 41, "severity": "medium",
-      "at": "2026-11-15T13:00:00Z",
+    { "kind": "unaddressed_issue", "detector": "Stale-Issue Detector", "issue": 12,
+      "severity": "low", "at": "2026-11-10T09:00:00Z", "action": "triage or close" },
+    { "kind": "stale_thread", "detector": "Already-Addressed Detector", "pr": 41,
+      "severity": "medium", "at": "2026-11-15T13:00:00Z",
       "detail": "comment on src/foo.ts:12 predates commit abc1234 (2026-11-16T14:02:00Z) touching that file",
       "action": "confirm the fix landed, then resolve the thread" },
-    { "kind": "merged_pr_issue_open", "pr": 37, "issue": 30, "severity": "medium",
-      "at": "2026-11-16T18:00:00Z", "action": "close issue #30, it's done" },
-    { "kind": "board_status_stale", "issue": 30, "severity": "low",
-      "at": "2026-11-10T09:00:00Z",
+    { "kind": "merged_pr_issue_open", "detector": "Orphaned-Issue Detector",
+      "pr": 37, "issue": 30, "severity": "medium", "at": "2026-11-16T18:00:00Z",
+      "action": "close issue #30, it's done" },
+    { "kind": "board_status_stale", "detector": "Board-Desync Detector",
+      "issue": 30, "severity": "low", "at": "2026-11-10T09:00:00Z",
       "detail": "board says In Progress, issue has been closed since 2026-11-10",
       "action": "move the board card to Done" }
   ]
@@ -225,66 +253,75 @@ to a reviewer even though it isn't.
 ```
 
 Terse by design — this is read by an LLM's context window, not rendered. Every item
-carries `at` and an `action`: the timestamp gives the agent a real timeline instead
-of a bag of unordered facts, and the action removes a translation step it would
-otherwise redo on every call. No field that isn't needed to decide, act, or place
-something in time goes in. `kind: "drift"` (signal 5) is omitted here — see its
-demoted status above; it's documented but not part of the v1 contract.
+carries `at`, `detector` (which named tool produced it — ties the item back to its
+intent, not just its shape), and an `action`. No field that isn't needed to decide,
+act, place something in time, or attribute intent goes in. The Upstream-Drift
+Detector is omitted here — see its demoted status above; it's documented but not
+part of the v1 contract.
 
 ## Architecture (phased)
 
 **M1 — core + CLI + skill + invocation wiring** (ship first, usable immediately;
 this is the phase that determines whether the tool gets used at all)
-- `src/core/` — a plain TS library: `getSnapshot(cwd?)` and `getPulse(cwd?, {issue?,
-  files?})`, resolving repo + "mine" scope from the current directory's git remote
-  and the authed `gh` user, plus `getUnresolvedComments(owner, repo, pr)` — all via
-  `@octokit/rest`/GraphQL authed through `gh auth token` (shell out once at startup,
-  no separate credential flow).
-- Signals 0 and 9 (timeline, duplicate-effort) ship in M1, not later — they're the
-  direct fix for the same-issue-different-angles failure mode, which is the
-  sharpest problem this tool exists to solve, not a nice-to-have alongside triage.
-- Signals 1–4, 6, 7 (everything except the project board and the demoted drift
-  signal) ship here too. 6 and 7 ride along for free — same GraphQL calls signal 2
-  already needs (thread/commit data, `closingIssuesReferences`), no new scope.
-- Every event/item carries `at` and (where applicable) `action` (see Output
-  contract) — these are what make the output worth reading instead of re-deriving
-  by hand each time.
-- `bin/agent-radar` CLI — `agent-radar snapshot [--repo owner/name] [--json]` and
-  `agent-radar pulse [--issue N] [--files a,b,c]`, `--repo` optional everywhere,
+- `src/core/` — a plain TS library: `runOrientationSweep`, `runDuplicateEffortCheck`
+  (together behind `orient(cwd?, {issue?, files?})`), and `runPrHealthCheck`,
+  `runUnresolvedFeedbackExtractor`, `runStaleIssueDetector`, `runConflictDetector`,
+  `runAlreadyAddressedDetector`, `runOrphanedIssueDetector` (together behind
+  `triage(cwd?)`). Repo + "mine" scope resolved from the current directory's git
+  remote and the authed `gh` user; all via `@octokit/rest`/GraphQL authed through
+  `gh auth token` (shell out once at startup, no separate credential flow).
+- The Orientation Sweep and Duplicate-Effort Detector ship in M1, not later —
+  they're the direct fix for the same-issue-different-angles failure mode, which is
+  the sharpest problem this tool exists to solve, not a nice-to-have alongside
+  triage.
+- The PR Health Check, Unresolved-Feedback Extractor, Stale-Issue Detector,
+  Conflict Detector, Already-Addressed Detector, and Orphaned-Issue Detector ship
+  here too (everything except Board-Desync and the demoted Upstream-Drift
+  detector). The Already-Addressed and Orphaned-Issue detectors ride along for
+  free — same GraphQL calls the Unresolved-Feedback Extractor already needs
+  (thread/commit data, `closingIssuesReferences`), no new scope.
+- Every event/item carries `at`, `detector`, and (where applicable) `action` (see
+  Output contract) — these are what make the output worth reading instead of
+  re-deriving by hand each time.
+- `bin/agent-radar` CLI — `agent-radar triage [--repo owner/name] [--json]` and
+  `agent-radar orient [--issue N] [--files a,b,c]`, `--repo` optional everywhere,
   defaulting to `pwd`'s remote.
 - A Claude Code skill (`SKILL.md` + thin wrapper script), installable into any
   project, that calls the CLI.
 - **The actual deliverable of M1 isn't the skill existing, it's a standing
-  instruction to use it** — a `CLAUDE.md` snippet ("run `agent-radar snapshot`
-  before starting or finishing work on an issue") and/or a `SessionStart` hook
-  that runs it automatically. Write both into this repo's own docs as something a
-  project copies in, not just the skill file — a tool nobody's told to call isn't
-  more "unprompted" than checking `gh` by hand would have been.
+  instruction to use it** — a `CLAUDE.md` snippet ("run `agent-radar triage` before
+  starting or finishing work on an issue, `agent-radar orient --issue N` before
+  starting a fix") and/or a `SessionStart` hook that runs `triage` automatically.
+  Write both into this repo's own docs as something a project copies in, not just
+  the skill file — a tool nobody's told to call isn't more "unprompted" than
+  checking `gh` by hand would have been.
 
-**M2 — project board**
-- Signal 8 (project-board status) gets its own phase: it's a genuinely separate
-  GraphQL shape (`ProjectV2Item` field values, org- or repo-scoped project lookup)
-  and needs a scope (`read:project`) the current `DanEscher98` token doesn't have
-  yet (`gh auth refresh -s read:project` before this lands) — bundling it with M1
-  would block M1 on a scope change for an unrelated signal.
+**M2 — Board-Desync Detector**
+- Gets its own phase: it's a genuinely separate GraphQL shape (`ProjectV2Item`
+  field values, org- or repo-scoped project lookup) and needs a scope
+  (`read:project`) the current `DanEscher98` token doesn't have yet
+  (`gh auth refresh -s read:project` before this lands) — bundling it with M1
+  would block M1 on a scope change for an unrelated detector.
 
-**M3 — stretch: session drift**
+**M3 — stretch: Upstream-Drift Detector**
 - `.agent-radar/state.json` (repo-local, gitignored) holding a session-start marker
-  per branch, surfacing `kind: "drift"`. Demoted here (see signal 5) since it mostly
-  duplicates a `git fetch && git log` an agent already runs before merging — build
-  it only if M1/M2 in daily use show it's actually missed.
+  per branch. Demoted here (see above) since it mostly duplicates a
+  `git fetch && git log` an agent already runs before merging — build it only if
+  M1/M2 in daily use show it's actually missed.
 
 **M4 — stretch: MCP server**
-- `agent-radar mcp` wraps the same `src/core/` library as MCP tools via
+- `agent-radar mcp` wraps the same `src/core/` library as MCP tools (one per
+  detector, named to match: `run_duplicate_effort_detector`, etc.) via
   `@modelcontextprotocol/sdk`. Demoted from its original M3 slot: the thing that
   makes this callable unprompted is the M1 hook/`CLAUDE.md` wiring, not the
   protocol — MCP only helps once a project *can't* install a skill/hook (e.g. an
   agent without filesystem-skill support), which isn't the common case yet.
 
 **M5 — stretch: human-facing digest**
-- A scheduled job (cron or GH Action) posting the same ranked digest to Slack/email
-  — addresses the supervisor-visible half of the pain point directly, reusing M1's
-  core library. Lowest priority: the agent-facing path is the actual ask.
+- A scheduled job (cron or GH Action) posting the same ranked `triage` digest to
+  Slack/email — addresses the supervisor-visible half of the pain point directly,
+  reusing M1's core library. Lowest priority: the agent-facing path is the actual
+  ask.
 
 ## Tech choices
 
@@ -300,9 +337,9 @@ this is the phase that determines whether the tool gets used at all)
 
 1. M1 — core + CLI + skill + the hook/`CLAUDE.md` wiring that actually makes it get
    called. This is the whole point; everything else is marginal without it.
-2. M2 — project-board staleness, once `read:project` scope is in place.
-3. M3 — session drift, only if M1 in daily use shows the git-log workaround is
-   actually a recurring friction, not a hypothetical one.
+2. M2 — Board-Desync Detector, once `read:project` scope is in place.
+3. M3 — Upstream-Drift Detector, only if M1 in daily use shows the git-log
+   workaround is actually a recurring friction, not a hypothetical one.
 4. M4 — MCP server, only if a target agent/environment can't use a filesystem
    skill or hook.
 5. M5 — Slack digest, only if the supervisor-facing angle still matters once
