@@ -1,4 +1,4 @@
-import type { GhContext } from "../github.js";
+import { searchIssuesAndPrs, type GhContext } from "../github.js";
 import type { DuplicateEffortItem } from "../types.js";
 
 const DEFAULT_WINDOW_DAYS = 30;
@@ -17,8 +17,8 @@ export async function runDuplicateEffortDetector(
 
   if (scope.issue) {
     const q = `repo:${ctx.owner}/${ctx.repo} is:pr ${scope.issue} created:>=${since}`;
-    const { data } = await ctx.octokit.rest.search.issuesAndPullRequests({ q, per_page: 20 });
-    for (const pr of data.items) {
+    const prs = await searchIssuesAndPrs(ctx, q, 20);
+    for (const pr of prs) {
       const merged = Boolean(pr.pull_request?.merged_at);
       if (pr.state === "closed" && !merged) {
         items.push({

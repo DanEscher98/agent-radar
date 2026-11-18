@@ -1,4 +1,4 @@
-import type { GhContext } from "../github.js";
+import { searchIssuesAndPrs, type GhContext } from "../github.js";
 import type { TriageItem } from "../types.js";
 
 const DEFAULT_THRESHOLD_DAYS = 7;
@@ -9,10 +9,10 @@ export async function runStaleIssueDetector(
   thresholdDays = DEFAULT_THRESHOLD_DAYS,
 ): Promise<TriageItem[]> {
   const q = `repo:${ctx.owner}/${ctx.repo} is:issue is:open assignee:@me`;
-  const res = await ctx.octokit.rest.search.issuesAndPullRequests({ q, per_page: 50 });
+  const issues = await searchIssuesAndPrs(ctx, q);
   const now = Date.now();
   const items: TriageItem[] = [];
-  for (const issue of res.data.items) {
+  for (const issue of issues) {
     const idleDays = Math.floor((now - new Date(issue.updated_at).getTime()) / 86_400_000);
     if (idleDays < thresholdDays) continue;
     items.push({

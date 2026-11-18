@@ -261,8 +261,9 @@ part of the v1 contract.
 
 ## Architecture (phased)
 
-**M1 — core + CLI + skill + invocation wiring** (ship first, usable immediately;
-this is the phase that determines whether the tool gets used at all)
+**M1 — core + CLI + skill + invocation wiring — done, tested against a real
+repo (pathos-inc/PAMS: 27 real findings, correctly caught PR #843 as duplicate
+effort against issue #627).**
 - `src/core/` — a plain TS library: `runOrientationSweep`, `runDuplicateEffortCheck`
   (together behind `orient(cwd?, {issue?, files?})`), and `runPrHealthCheck`,
   `runUnresolvedFeedbackExtractor`, `runStaleIssueDetector`, `runConflictDetector`,
@@ -305,13 +306,28 @@ this is the phase that determines whether the tool gets used at all)
   is unclaimed on the npm registry. Install/run: `npx agent-radar triage` with no
   install step at all, or `npm i -g agent-radar` for a persistent `agent-radar`
   binary — document both in `README.md` once the first version actually publishes.
+  Not yet published (no `NPM_TOKEN` secret configured) — installed locally via
+  `npm link` in the meantime, see `README.md`.
+- The predictive half of the Conflict Detector shipped too, as its own module
+  (`predictiveConflictDetector.ts`) rather than folded into the GraphQL-backed
+  one: it's local-git-state-dependent (which open PR matches the branch
+  currently checked out, whether the working tree's uncommitted changes
+  overlap what moved on the base branch since the fork point) and fails
+  silently on any git error, since it's a bonus signal, not something to crash
+  `triage` over.
+- A unit test suite (`vitest`, 26 tests across 10 files) covers every pure
+  detector directly and the API-calling ones against a fake `GhContext` — no
+  live GitHub calls in CI, per the original plan.
+- `README.md`'s "Wire it in" section carries the actual `CLAUDE.md` snippet
+  and `SessionStart` hook JSON, not just a description of the idea.
 
-**M2 — Board-Desync Detector**
-- Gets its own phase: it's a genuinely separate GraphQL shape (`ProjectV2Item`
-  field values, org- or repo-scoped project lookup) and needs a scope
-  (`read:project`) the current `DanEscher98` token doesn't have yet
-  (`gh auth refresh -s read:project` before this lands) — bundling it with M1
-  would block M1 on a scope change for an unrelated detector.
+**M2 — Board-Desync Detector — done.** Didn't actually need a scope change:
+the account used to test against PAMS (`danieldominguez-pathos`) already had
+the `project` scope from earlier work. Tested live against PAMS — it
+correctly found zero items, because PAMS has no ProjectV2 board linked at
+all (confirmed directly via `gh api graphql`), not because the detector
+silently failed; the missing-scope/no-boards degrade-to-empty path is still
+in place for accounts that don't have the scope.
 
 **M3 — stretch: Upstream-Drift Detector**
 - `.agent-radar/state.json` (repo-local, gitignored) holding a session-start marker
@@ -345,12 +361,13 @@ this is the phase that determines whether the tool gets used at all)
 
 ## Order of work
 
-1. M1 — core + CLI + skill + the hook/`CLAUDE.md` wiring that actually makes it get
-   called. This is the whole point; everything else is marginal without it.
-2. M2 — Board-Desync Detector, once `read:project` scope is in place.
+1. ~~M1 — core + CLI + skill + the hook/`CLAUDE.md` wiring that actually makes it
+   get called.~~ Done.
+2. ~~M2 — Board-Desync Detector.~~ Done.
 3. M3 — Upstream-Drift Detector, only if M1 in daily use shows the git-log
-   workaround is actually a recurring friction, not a hypothetical one.
+   workaround is actually a recurring friction, not a hypothetical one. Not
+   built — that condition hasn't come up.
 4. M4 — MCP server, only if a target agent/environment can't use a filesystem
-   skill or hook.
+   skill or hook. Not built — hasn't come up.
 5. M5 — Slack digest, only if the supervisor-facing angle still matters once
-   M1–M4 land.
+   M1–M4 land. Not built — not yet revisited.

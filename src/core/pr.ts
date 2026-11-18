@@ -1,4 +1,4 @@
-import type { GhContext } from "./github.js";
+import { searchIssuesAndPrs, type GhContext } from "./github.js";
 
 export interface ReviewThreadComment {
   author: string;
@@ -107,15 +107,15 @@ interface PrDetailQueryResult {
 
 export async function findMyOpenPrNumbers(ctx: GhContext): Promise<number[]> {
   const q = `repo:${ctx.owner}/${ctx.repo} is:pr is:open involves:@me`;
-  const res = await ctx.octokit.rest.search.issuesAndPullRequests({ q, per_page: 50 });
-  return res.data.items.map((item) => item.number);
+  const items = await searchIssuesAndPrs(ctx, q);
+  return items.map((item) => item.number);
 }
 
 export async function findMyRecentlyMergedPrNumbers(ctx: GhContext, days: number): Promise<number[]> {
   const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
   const q = `repo:${ctx.owner}/${ctx.repo} is:pr is:merged author:@me merged:>=${since}`;
-  const res = await ctx.octokit.rest.search.issuesAndPullRequests({ q, per_page: 50 });
-  return res.data.items.map((item) => item.number);
+  const items = await searchIssuesAndPrs(ctx, q);
+  return items.map((item) => item.number);
 }
 
 export async function fetchPrDetail(ctx: GhContext, number: number): Promise<PrDetail | null> {

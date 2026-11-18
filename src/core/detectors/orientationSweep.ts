@@ -1,4 +1,4 @@
-import type { GhContext } from "../github.js";
+import { searchIssuesAndPrs, type GhContext } from "../github.js";
 import type { TimelineEvent } from "../types.js";
 
 const DEFAULT_LIMIT = 20;
@@ -52,11 +52,8 @@ export async function runOrientationSweep(
   const prQuery = scope.issue
     ? `repo:${ctx.owner}/${ctx.repo} is:pr ${scope.issue} sort:updated-desc`
     : `repo:${ctx.owner}/${ctx.repo} is:pr sort:updated-desc`;
-  const { data: prSearch } = await ctx.octokit.rest.search.issuesAndPullRequests({
-    q: prQuery,
-    per_page: 10,
-  });
-  for (const pr of prSearch.items) {
+  const prSearch = await searchIssuesAndPrs(ctx, prQuery, 10);
+  for (const pr of prSearch) {
     const merged = Boolean(pr.pull_request?.merged_at);
     const kind = merged ? "pr_merged" : pr.state === "closed" ? "pr_closed_unmerged" : "pr_opened";
     events.push({

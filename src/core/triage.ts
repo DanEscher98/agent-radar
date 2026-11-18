@@ -6,6 +6,8 @@ import { runUnresolvedFeedbackExtractor } from "./detectors/unresolvedFeedbackEx
 import { runAlreadyAddressedDetector } from "./detectors/alreadyAddressedDetector.js";
 import { runOrphanedIssueDetector } from "./detectors/orphanedIssueDetector.js";
 import { runStaleIssueDetector } from "./detectors/staleIssueDetector.js";
+import { runPredictiveConflictDetector } from "./detectors/predictiveConflictDetector.js";
+import { runBoardDesyncDetector } from "./detectors/boardDesyncDetector.js";
 import type { TriageItem, TriageResult } from "./types.js";
 
 const MERGED_WINDOW_DAYS = 30;
@@ -31,11 +33,13 @@ export async function triage(cwd: string, opts: { repo?: string } = {}): Promise
 
   const items: TriageItem[] = [
     ...runConflictDetector(openPrs),
+    ...runPredictiveConflictDetector(cwd, openPrs),
     ...runPrHealthCheck(openPrs),
     ...runUnresolvedFeedbackExtractor(openPrs),
     ...runAlreadyAddressedDetector(openPrs),
     ...runOrphanedIssueDetector(mergedPrs),
     ...(await runStaleIssueDetector(ctx)),
+    ...(await runBoardDesyncDetector(ctx)),
   ];
   items.sort(bySeverityThenRecency);
 

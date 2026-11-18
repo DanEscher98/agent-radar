@@ -25,14 +25,51 @@ architecture, output contract).
 
 ## Install
 
-Not published yet. Once M1 ships, this will be:
+Not published to npm yet (no `NPM_TOKEN` secret configured, so the release
+workflow exists but hasn't run). Until then, build and link it locally:
 
 ```sh
-npx agent-radar triage      # run without installing
-npm i -g agent-radar        # or install a persistent binary
+git clone git@github.com:DanEscher98/agent-radar.git
+cd agent-radar
+npm install && npm run build
+npm link            # puts a global `agent-radar` on your PATH
 ```
 
-Published to npm (not PyPI) via a GitHub Actions workflow on release — see
-`DESIGN.md`'s M1 section for why.
+Once published, this collapses to `npx agent-radar triage` / `npm i -g agent-radar`.
 
-Status: design phase, no code yet.
+## Wire it in
+
+The tool existing isn't what makes it "called unprompted" — a standing
+instruction to call it is. Pick one or both:
+
+**A `CLAUDE.md` line** (or equivalent for another agent), in the project being
+worked on:
+
+```md
+Before starting work on an issue, run `agent-radar orient --issue N` to see
+what's already been tried. Before and after working a PR, run
+`agent-radar triage` to check for conflicts, unresolved review feedback, and
+stale issues — don't wait to be asked.
+```
+
+**A `SessionStart` hook**, in that project's `.claude/settings.json`, to run
+`triage` automatically at the start of every session (requires `agent-radar`
+on `PATH`, see Install above):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "agent-radar triage 2>/dev/null || true" }] }
+    ]
+  }
+}
+```
+
+## Status
+
+M1 and M2 are built and tested against a real repo (see `DESIGN.md`'s
+Architecture section for what's in each). Not yet published to npm. The
+stretch phases (Upstream-Drift Detector, an MCP server, a Slack digest)
+remain gated behind the conditions `DESIGN.md` sets for them — not built
+unless those conditions are actually met.
