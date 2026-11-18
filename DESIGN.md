@@ -295,6 +295,16 @@ this is the phase that determines whether the tool gets used at all)
   Write both into this repo's own docs as something a project copies in, not just
   the skill file — a tool nobody's told to call isn't more "unprompted" than
   checking `gh` by hand would have been.
+- **Published to npm** (not PyPI — checked for a prior Python MCP project under
+  `DanEscher98` with an existing PyPI auto-publish pipeline to reuse; found two
+  forked MCP servers with real contributions, but neither one's fork or upstream
+  actually auto-publishes to PyPI, so there's nothing to inherit either way — npm
+  fits the TS/Node implementation directly, no new pattern invented). CI:
+  `.github/workflows/npm-publish.yml`, triggered on a GitHub Release (tag `vX.Y.Z`),
+  running `npm publish` with an `NPM_TOKEN` repo secret. Package name `agent-radar`
+  is unclaimed on the npm registry. Install/run: `npx agent-radar triage` with no
+  install step at all, or `npm i -g agent-radar` for a persistent `agent-radar`
+  binary — document both in `README.md` once the first version actually publishes.
 
 **M2 — Board-Desync Detector**
 - Gets its own phase: it's a genuinely separate GraphQL shape (`ProjectV2Item`

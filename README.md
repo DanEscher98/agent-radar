@@ -23,4 +23,16 @@ doesn't duplicate it.
 See [DESIGN.md](./DESIGN.md) for the full plan (problem, detectors, phased
 architecture, output contract).
 
+## Install
+
+Not published yet. Once M1 ships, this will be:
+
+```sh
+npx agent-radar triage      # run without installing
+npm i -g agent-radar        # or install a persistent binary
+```
+
+Published to npm (not PyPI) via a GitHub Actions workflow on release — see
+`DESIGN.md`'s M1 section for why.
+
 Status: design phase, no code yet.
