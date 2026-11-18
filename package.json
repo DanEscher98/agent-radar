@@ -1,0 +1,32 @@
+{
+  "name": "agent-radar",
+  "version": "0.1.0",
+  "description": "Agent-callable GitHub orientation and triage digests: re-ground in what's actually true about a repo instead of drifting on a stale picture of it",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "agent-radar": "./bin/agent-radar.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "SKILL.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@octokit/graphql": "^8.1.1",
+    "@octokit/rest": "^21.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
