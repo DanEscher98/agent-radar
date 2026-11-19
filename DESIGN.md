@@ -89,11 +89,12 @@ isn't one command:
   triage sweep — the direct antidote to re-patching the same issue from a new angle
   without having checked what's already in flight on it.
 - **`agent-radar triage`** — the fuller digest: **PR Health Check**,
-  **Unresolved-Feedback Extractor**, **Stale-Issue Detector**, **Conflict
-  Detector**, and the metadata-drift detectors (**Already-Addressed Detector**,
-  **Orphaned-Issue Detector**, **Board-Desync Detector**). Called at the start and
-  end of working a PR/issue, not continuously — this is the one that answers the
-  original "stale PRs and comments" ask.
+  **Unresolved-Feedback Extractor**, **Review-Request Detector**, **Stale-Issue
+  Detector**, **Conflict Detector**, and the metadata-drift detectors
+  (**Already-Addressed Detector**, **Orphaned-Issue Detector**, **Board-Desync
+  Detector**). Called at the start and end of working a PR/issue, not
+  continuously — this is the one that answers the original "stale PRs and
+  comments" ask.
 
 Both share `src/core/`; `orient` is not a smaller rewrite of `triage`, it's a
 narrower query over the same data sources, run by a different detector set.
@@ -132,6 +133,19 @@ what the agent needs verbatim to go fix it.
 
 Open issues, assigned to you (or unassigned with a `needs-triage` label), no
 comment/label change since opened past a configurable threshold.
+
+### Review-Request Detector
+
+Open PRs where someone has explicitly requested *your* review — GitHub's
+`review-requested:@me` search qualifier, which is not the same set as "PRs
+you're involved in" (`involves:@me` covers author/assignee/mentions/commenter,
+not review requests). Without this, a PR you were only ever asked to review —
+never authored, assigned, or commented on — never surfaces at all; it's a
+different failure mode than a stale PR you already own. Severity is high by
+default: an explicit ask from a teammate is a stronger signal than general
+PR staleness. The qualifier itself tracks "still pending" — GitHub drops you
+from it once you submit a review, so there's no separate "already reviewed"
+filter to maintain.
 
 ### Conflict Detector
 
@@ -237,6 +251,10 @@ tried and abandoned.
       "action": "ping for review or close if abandoned" },
     { "kind": "unaddressed_issue", "detector": "Stale-Issue Detector", "issue": 12,
       "severity": "low", "at": "2026-11-10T09:00:00Z", "action": "triage or close" },
+    { "kind": "review_requested", "detector": "Review-Request Detector", "pr": 44,
+      "severity": "high", "at": "2026-11-18T19:00:00Z",
+      "detail": "#44 \"add retries\" is waiting on your review",
+      "action": "review" },
     { "kind": "stale_thread", "detector": "Already-Addressed Detector", "pr": 41,
       "severity": "medium", "at": "2026-11-15T13:00:00Z",
       "detail": "comment on src/foo.ts:12 predates commit abc1234 (2026-11-16T14:02:00Z) touching that file",
@@ -266,21 +284,26 @@ repo (pathos-inc/PAMS: 27 real findings, correctly caught PR #843 as duplicate
 effort against issue #627).**
 - `src/core/` — a plain TS library: `runOrientationSweep`, `runDuplicateEffortCheck`
   (together behind `orient(cwd?, {issue?, files?})`), and `runPrHealthCheck`,
-  `runUnresolvedFeedbackExtractor`, `runStaleIssueDetector`, `runConflictDetector`,
-  `runAlreadyAddressedDetector`, `runOrphanedIssueDetector` (together behind
-  `triage(cwd?)`). Repo + "mine" scope resolved from the current directory's git
+  `runUnresolvedFeedbackExtractor`, `runReviewRequestDetector`,
+  `runStaleIssueDetector`, `runConflictDetector`, `runAlreadyAddressedDetector`,
+  `runOrphanedIssueDetector` (together behind `triage(cwd?)`). Repo + "mine"
+  scope resolved from the current directory's git
   remote and the authed `gh` user; all via `@octokit/rest`/GraphQL authed through
   `gh auth token` (shell out once at startup, no separate credential flow).
 - The Orientation Sweep and Duplicate-Effort Detector ship in M1, not later —
   they're the direct fix for the same-issue-different-angles failure mode, which is
   the sharpest problem this tool exists to solve, not a nice-to-have alongside
   triage.
-- The PR Health Check, Unresolved-Feedback Extractor, Stale-Issue Detector,
-  Conflict Detector, Already-Addressed Detector, and Orphaned-Issue Detector ship
-  here too (everything except Board-Desync and the demoted Upstream-Drift
-  detector). The Already-Addressed and Orphaned-Issue detectors ride along for
-  free — same GraphQL calls the Unresolved-Feedback Extractor already needs
-  (thread/commit data, `closingIssuesReferences`), no new scope.
+- The PR Health Check, Unresolved-Feedback Extractor, Review-Request Detector,
+  Stale-Issue Detector, Conflict Detector, Already-Addressed Detector, and
+  Orphaned-Issue Detector ship here too (everything except Board-Desync and
+  the demoted Upstream-Drift detector). The Already-Addressed and
+  Orphaned-Issue detectors ride along for free — same GraphQL calls the
+  Unresolved-Feedback Extractor already needs (thread/commit data,
+  `closingIssuesReferences`), no new scope. The Review-Request Detector needed
+  one new search (`review-requested:@me`) — `involves:@me` doesn't cover
+  review requests, so without it a PR you were only asked to review (nothing
+  else) never entered the fetch set at all, not just went unflagged.
 - Every event/item carries `at`, `detector`, and (where applicable) `action` (see
   Output contract) — these are what make the output worth reading instead of
   re-deriving by hand each time.
@@ -315,7 +338,7 @@ effort against issue #627).**
   overlap what moved on the base branch since the fork point) and fails
   silently on any git error, since it's a bonus signal, not something to crash
   `triage` over.
-- A unit test suite (`vitest`, 29 tests across 11 files) covers every pure
+- A unit test suite (`vitest`, 31 tests across 12 files) covers every pure
   detector directly and the API-calling ones against a fake `GhContext` — no
   live GitHub calls in CI, per the original plan.
 - `README.md`'s "Wire it in" section carries the actual `CLAUDE.md` snippet

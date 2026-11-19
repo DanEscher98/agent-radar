@@ -118,6 +118,18 @@ export async function findMyRecentlyMergedPrNumbers(ctx: GhContext, days: number
   return items.map((item) => item.number);
 }
 
+/** Open PRs where someone has explicitly requested your review. Distinct from
+ * `findMyOpenPrNumbers`'s `involves:@me` — GitHub's `involves` qualifier covers
+ * author/assignee/mentions/commenter but not review requests, so a PR you were
+ * only asked to review (never authored, assigned, or commented on) would
+ * otherwise never surface at all. The search qualifier itself tracks
+ * "pending": GitHub drops you from it once you submit a review. */
+export async function findPrsAwaitingMyReview(ctx: GhContext): Promise<number[]> {
+  const q = `repo:${ctx.owner}/${ctx.repo} is:pr is:open review-requested:@me`;
+  const items = await searchIssuesAndPrs(ctx, q);
+  return items.map((item) => item.number);
+}
+
 export async function fetchPrDetail(ctx: GhContext, number: number): Promise<PrDetail | null> {
   const data = await ctx.graphql<PrDetailQueryResult>(PR_DETAIL_QUERY, {
     owner: ctx.owner,

@@ -1,5 +1,10 @@
 import { createContext } from "./github.js";
-import { fetchManyPrDetails, findMyOpenPrNumbers, findMyRecentlyMergedPrNumbers } from "./pr.js";
+import {
+  fetchManyPrDetails,
+  findMyOpenPrNumbers,
+  findMyRecentlyMergedPrNumbers,
+  findPrsAwaitingMyReview,
+} from "./pr.js";
 import { runConflictDetector } from "./detectors/conflictDetector.js";
 import { runPrHealthCheck } from "./detectors/prHealthCheck.js";
 import { runUnresolvedFeedbackExtractor } from "./detectors/unresolvedFeedbackExtractor.js";
@@ -8,6 +13,7 @@ import { runOrphanedIssueDetector } from "./detectors/orphanedIssueDetector.js";
 import { runStaleIssueDetector } from "./detectors/staleIssueDetector.js";
 import { runPredictiveConflictDetector } from "./detectors/predictiveConflictDetector.js";
 import { runBoardDesyncDetector } from "./detectors/boardDesyncDetector.js";
+import { runReviewRequestDetector } from "./detectors/reviewRequestDetector.js";
 import type { TriageItem, TriageResult } from "./types.js";
 
 const MERGED_WINDOW_DAYS = 30;
@@ -22,14 +28,17 @@ function bySeverityThenRecency(a: TriageItem, b: TriageItem): number {
 export async function triage(cwd: string, opts: { repo?: string } = {}): Promise<TriageResult> {
   const ctx = await createContext(cwd, opts.repo);
 
-  const [openNumbers, mergedNumbers] = await Promise.all([
+  const [openNumbers, mergedNumbers, reviewRequestedNumbers] = await Promise.all([
     findMyOpenPrNumbers(ctx),
     findMyRecentlyMergedPrNumbers(ctx, MERGED_WINDOW_DAYS),
+    findPrsAwaitingMyReview(ctx),
   ]);
-  const allNumbers = [...new Set([...openNumbers, ...mergedNumbers])];
+  const allNumbers = [...new Set([...openNumbers, ...mergedNumbers, ...reviewRequestedNumbers])];
   const prs = await fetchManyPrDetails(ctx, allNumbers);
   const openPrs = prs.filter((pr) => pr.mergedAt === null);
   const mergedPrs = prs.filter((pr) => pr.mergedAt !== null);
+  const reviewRequestedSet = new Set(reviewRequestedNumbers);
+  const awaitingMyReview = openPrs.filter((pr) => reviewRequestedSet.has(pr.number));
 
   const items: TriageItem[] = [
     ...runConflictDetector(openPrs),
@@ -38,6 +47,7 @@ export async function triage(cwd: string, opts: { repo?: string } = {}): Promise
     ...runUnresolvedFeedbackExtractor(openPrs),
     ...runAlreadyAddressedDetector(openPrs),
     ...runOrphanedIssueDetector(mergedPrs),
+    ...runReviewRequestDetector(awaitingMyReview),
     ...(await runStaleIssueDetector(ctx)),
     ...(await runBoardDesyncDetector(ctx)),
   ];
