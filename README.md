@@ -12,9 +12,9 @@ Two tools:
   tried, including attempts that were abandoned) before you start a fix.
 - **`agent-radar triage`** — the fuller sweep, called at the start/end of working a
   PR or issue: PR Health Check, Unresolved-Feedback Extractor, Stale-Issue
-  Detector, Conflict Detector, and the metadata-drift detectors (Already-Addressed,
-  Orphaned-Issue, Board-Desync) — cases where the real state moved on but the
-  tracking around it didn't.
+  Detector, Conflict Detector, and the metadata-drift detectors (Orphaned-Issue,
+  Board-Desync) — cases where the real state moved on but the tracking around
+  it didn't.
 
 If you want a human-facing dashboard for yourself, use
 [gh-dash](https://github.com/dlvhdr/gh-dash) instead — this project deliberately

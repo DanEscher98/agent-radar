@@ -90,10 +90,10 @@ isn't one command:
   without having checked what's already in flight on it.
 - **`agent-radar triage`** — the fuller digest: **PR Health Check**,
   **Unresolved-Feedback Extractor**, **Stale-Issue Detector**, **Conflict
-  Detector**, and the metadata-drift detectors (**Already-Addressed Detector**,
-  **Orphaned-Issue Detector**, **Board-Desync Detector**). Called at the start and
-  end of working a PR/issue, not continuously — this is the one that answers the
-  original "stale PRs and comments" ask.
+  Detector**, and the metadata-drift detectors (**Orphaned-Issue Detector**,
+  **Board-Desync Detector**). Called at the start and end of working a PR/issue,
+  not continuously — this is the one that answers the original "stale PRs and
+  comments" ask.
 
 Both share `src/core/`; `orient` is not a smaller rewrite of `triage`, it's a
 narrower query over the same data sources, run by a different detector set.
@@ -124,9 +124,22 @@ or review).
 ### Unresolved-Feedback Extractor
 
 Not just "N comments requested changes": the actual thread body, author, file +
-line, `isResolved`/`isOutdated` filtered to the ones still live. This is the single
-highest-value detector — it's what a supervisor means by "stale comments," and
-what the agent needs verbatim to go fix it.
+line, for every thread GitHub doesn't show as `isResolved` — the one signal that
+a human actually engaged with it, by applying the fix or by explicitly
+dismissing the concern. This is the single highest-value detector — it's what a
+supervisor means by "stale comments," and what the agent needs verbatim to go
+fix it.
+
+Deliberately does *not* filter out `isOutdated` threads. An earlier version did,
+on the theory that a shifted diff hunk meant the code had moved on — but GitHub
+sets `isOutdated` whenever *any* later commit changes the surrounding lines,
+including an unrelated base-branch catch-up merge that never touches the
+flagged code at all. Real findings merged to a protected branch unaddressed
+under that filter (confirmed in practice: a PR carried five open threads, four
+flipped `isOutdated` by catch-up merges with no actual fix behind them, and only
+the fifth — never outdated — still showed up). Each comment now carries its
+thread's `outdated` flag instead, so the agent is told to verify rather than
+trust it.
 
 ### Stale-Issue Detector
 
@@ -158,14 +171,14 @@ A different shape of problem from the detectors above: the real state is already
 correct, but something that's supposed to track it wasn't updated, so it *reads*
 as stale to a reviewer even though it isn't.
 
-**Already-Addressed Detector** — a review thread whose comment points at a
-file/line, where a later commit on the PR touched that same file after the comment
-was posted. Can't prove the fix is correct, but it's a strong "likely addressed, go
-confirm and resolve the thread" signal versus a thread sitting on a file nothing
-has touched since (genuinely still unresolved). Needs the comment's
-`originalLine`/`diffHunk` plus the PR's commit list with per-commit changed files
-(both in GraphQL `PullRequest.reviewThreads` / `PullRequest.commits`) — no extra
-scope beyond the Unresolved-Feedback Extractor already needs.
+*(A prior design here specced an Already-Addressed Detector, using `isOutdated`
+as a "likely fixed" signal to downgrade a thread out of the Unresolved-Feedback
+Extractor. Removed — see that section above for why `isOutdated` can't carry
+that weight. A correct version needs the PR's per-commit changed files to
+confirm the *PR's own* commits, not a merge from the base branch, touched the
+flagged file after the comment; that's extra GraphQL/REST scope the project
+hasn't taken on, so for now an outdated thread just stays in the main list with
+a flag, not a separate lower-severity item.)*
 
 **Orphaned-Issue Detector** — cross-check each merged PR's
 `closingIssuesReferences` (GraphQL) against the linked issue's current `state`.
@@ -230,17 +243,13 @@ tried and abandoned.
     { "kind": "changes_requested", "detector": "Unresolved-Feedback Extractor",
       "pr": 41, "severity": "high",
       "comments": [{ "author": "...", "path": "...", "line": 12, "body": "...",
-        "at": "2026-11-17T16:30:00Z" }],
+        "at": "2026-11-17T16:30:00Z", "outdated": false }],
       "action": "address the comment on src/foo.ts:12, then reply" },
     { "kind": "stale_pr", "detector": "PR Health Check", "pr": 39,
       "severity": "medium", "at": "2026-11-14T11:00:00Z", "idleDays": 4,
       "action": "ping for review or close if abandoned" },
     { "kind": "unaddressed_issue", "detector": "Stale-Issue Detector", "issue": 12,
       "severity": "low", "at": "2026-11-10T09:00:00Z", "action": "triage or close" },
-    { "kind": "stale_thread", "detector": "Already-Addressed Detector", "pr": 41,
-      "severity": "medium", "at": "2026-11-15T13:00:00Z",
-      "detail": "comment on src/foo.ts:12 predates commit abc1234 (2026-11-16T14:02:00Z) touching that file",
-      "action": "confirm the fix landed, then resolve the thread" },
     { "kind": "merged_pr_issue_open", "detector": "Orphaned-Issue Detector",
       "pr": 37, "issue": 30, "severity": "medium", "at": "2026-11-16T18:00:00Z",
       "action": "close issue #30, it's done" },
@@ -276,11 +285,11 @@ effort against issue #627).**
   the sharpest problem this tool exists to solve, not a nice-to-have alongside
   triage.
 - The PR Health Check, Unresolved-Feedback Extractor, Stale-Issue Detector,
-  Conflict Detector, Already-Addressed Detector, and Orphaned-Issue Detector ship
-  here too (everything except Board-Desync and the demoted Upstream-Drift
-  detector). The Already-Addressed and Orphaned-Issue detectors ride along for
-  free — same GraphQL calls the Unresolved-Feedback Extractor already needs
-  (thread/commit data, `closingIssuesReferences`), no new scope.
+  Conflict Detector, and Orphaned-Issue Detector ship here too (everything
+  except Board-Desync and the demoted Upstream-Drift detector). The
+  Orphaned-Issue Detector rides along for free — same GraphQL calls the
+  Unresolved-Feedback Extractor already needs (thread data,
+  `closingIssuesReferences`), no new scope.
 - Every event/item carries `at`, `detector`, and (where applicable) `action` (see
   Output contract) — these are what make the output worth reading instead of
   re-deriving by hand each time.

@@ -6,6 +6,13 @@ export interface FeedbackComment {
   line: number | null;
   body: string;
   at: string;
+  /** GitHub's `isOutdated` on the thread this comment belongs to: the diff
+   * hunk it anchored to no longer exists verbatim. This fires just as
+   * readily when an unrelated commit (a base-branch catch-up merge) shifts
+   * the surrounding lines as it does when someone actually fixes the flagged
+   * code — so it is not evidence the concern was addressed, only a prompt to
+   * check by hand before trusting it. */
+  outdated: boolean;
 }
 
 /** One finding from a `triage` detector. Every item names the detector that

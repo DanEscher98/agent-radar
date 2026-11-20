@@ -16,8 +16,16 @@ describe("Unresolved-Feedback Extractor", () => {
     expect(runUnresolvedFeedbackExtractor([pr])).toHaveLength(0);
   });
 
-  it("ignores an outdated thread (that's the Already-Addressed Detector's job)", () => {
-    const pr = makePr({ reviewThreads: [makeThread({ isOutdated: true })] });
+  it("still flags an outdated thread that was never resolved", () => {
+    const pr = makePr({ number: 7, reviewThreads: [makeThread({ isOutdated: true })] });
+    const items = runUnresolvedFeedbackExtractor([pr]);
+    expect(items).toHaveLength(1);
+    expect(items[0].comments?.[0]).toMatchObject({ outdated: true });
+    expect(items[0].detail).toContain("marked outdated by GitHub");
+  });
+
+  it("ignores a thread that's outdated AND resolved", () => {
+    const pr = makePr({ reviewThreads: [makeThread({ isOutdated: true, isResolved: true })] });
     expect(runUnresolvedFeedbackExtractor([pr])).toHaveLength(0);
   });
 });

@@ -3,7 +3,6 @@ import { fetchManyPrDetails, findMyOpenPrNumbers, findMyRecentlyMergedPrNumbers 
 import { runConflictDetector } from "./detectors/conflictDetector.js";
 import { runPrHealthCheck } from "./detectors/prHealthCheck.js";
 import { runUnresolvedFeedbackExtractor } from "./detectors/unresolvedFeedbackExtractor.js";
-import { runAlreadyAddressedDetector } from "./detectors/alreadyAddressedDetector.js";
 import { runOrphanedIssueDetector } from "./detectors/orphanedIssueDetector.js";
 import { runStaleIssueDetector } from "./detectors/staleIssueDetector.js";
 import { runPredictiveConflictDetector } from "./detectors/predictiveConflictDetector.js";
@@ -36,7 +35,6 @@ export async function triage(cwd: string, opts: { repo?: string } = {}): Promise
     ...runPredictiveConflictDetector(cwd, openPrs),
     ...runPrHealthCheck(openPrs),
     ...runUnresolvedFeedbackExtractor(openPrs),
-    ...runAlreadyAddressedDetector(openPrs),
     ...runOrphanedIssueDetector(mergedPrs),
     ...(await runStaleIssueDetector(ctx)),
     ...(await runBoardDesyncDetector(ctx)),
